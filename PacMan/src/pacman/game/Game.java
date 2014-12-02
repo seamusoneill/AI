@@ -1665,16 +1665,4 @@ public final class Game
 
 		return caches[mazeIndex].getPathDistanceFromA2B(fromNodeIndex,toNodeIndex,lastMoveMade);
 	}
-
-	public int getPacmanArea() {
-		if (getCurrentLevel() == 0)
-		{
-			if (getPacmanCurrentNodeIndex() < 10)
-			{
-				
-			}
-		}
-		// TODO Auto-generated method stub
-		return 0;
-	}
 }
