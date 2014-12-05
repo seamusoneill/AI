@@ -1,6 +1,5 @@
 package pacman.entries.ghosts;
 
-import java.io.Console;
 import java.util.EnumMap;
 import java.util.Random;
 import java.util.Vector;
@@ -27,12 +26,17 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
 	};
 	
 	private final static int PILL_PROXIMITY = 20;		//if Ms Pac-Man is this close to a power pill, back away
-	private final static int CHASE_PROXIMITY = 70; //If ghost is close to Ms Pac-Man CHASE
+	private final static int CHASE_PROXIMITY = 50; //If ghost is close to Ms Pac-Man CHASE
+	private final static int SUICIDAL_CHASE_PROXIMITY = 100; //If ghost is this close to Ms Pac-Man, chase and don't back off if near a power pill
 	private final static int MAZE_WIDTH = 108;
 	private final static int MAZE_HEIGHT = 116;
+	private final static int NODES_TO_JUNCTION = 5; //Limit for interception check
+	
 	private EnumMap<GHOST, MOVE> myMoves=new EnumMap<GHOST, MOVE>(GHOST.class);
+	
 	Random rnd=new Random();
 	boolean initialize = false;
+	
 	Vector<Integer> TLQuad = new Vector<Integer>();
 	Vector<Integer> TRQuad = new Vector<Integer>();
 	Vector<Integer> BLQuad = new Vector<Integer>();
@@ -41,14 +45,20 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
 	Vector<Integer> TRQuadJunctions = new Vector<Integer>();
 	Vector<Integer> BLQuadJunctions = new Vector<Integer>();
 	Vector<Integer> BRQuadJunctions = new Vector<Integer>();
-	private boolean quadrantWanderer = false;
-	private boolean suicidalChaser = false;
-	private boolean pillInterceptor = false;
-	private boolean portalGuard = false;
-	private boolean towerGuard = false;
+	Vector<Integer> LHalf = new Vector<Integer>();
+	Vector<Integer> RHalf = new Vector<Integer>();
+	Vector<Integer> LHalfJunctions = new Vector<Integer>();
+	Vector<Integer> RHalfJunctions = new Vector<Integer>();
+	
+	private boolean quadrantWanderer;
+	private boolean suicidalChaser;
+	private boolean pillInterceptor;
+	private boolean portalGuard;
+	private boolean interceptChaser;
 	
 	public EnumMap<GHOST, MOVE> getMove(Game game, long timeDue)
 	{
+		//Do once (called like this to be competition entry viable)
 		if (!initialize)
 		{
 			for (int i = 0; i < game.getNumberOfNodes(); i++)
@@ -58,6 +68,7 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
 				
 				if (x <= MAZE_WIDTH/2)
 				{
+					LHalf.add(i);
 					if (y <= MAZE_HEIGHT/2)
 						TLQuad.add(i);
 					else
@@ -65,6 +76,7 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
 				}
 				else
 				{
+					RHalf.add(i);
 					if (y <= MAZE_HEIGHT/2)
 						TRQuad.add(i);
 					else
@@ -75,106 +87,134 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
 			for (int i = 0; i < TLQuad.size(); i++)
 			{
 				if(game.isJunction(TLQuad.get(i)))
-						TLQuadJunctions.add(TLQuad.get(i));
+				{
+					TLQuadJunctions.add(TLQuad.get(i));
+					LHalfJunctions.add(TLQuad.get(i));
+				}
 			}
 			for (int i = 0; i < TRQuad.size(); i++)
 			{
 				if(game.isJunction(TRQuad.get(i)))
-						TRQuadJunctions.add(TRQuad.get(i));
+				{
+					TRQuadJunctions.add(TRQuad.get(i));
+					RHalfJunctions.add(TRQuad.get(i));
+				}
 			}
 			for (int i = 0; i < BLQuad.size(); i++)
 			{
 				if(game.isJunction(BLQuad.get(i)))
-						BLQuadJunctions.add(BLQuad.get(i));
+				{
+					BLQuadJunctions.add(BLQuad.get(i));
+					LHalfJunctions.add(BLQuad.get(i));
+				}
 			}
 			for (int i = 0; i < BRQuad.size(); i++)
 			{
 				if(game.isJunction(BRQuad.get(i)))
-						BRQuadJunctions.add(BRQuad.get(i));
+				{
+					BRQuadJunctions.add(BRQuad.get(i));
+					RHalfJunctions.add(BRQuad.get(i));
+				}
 			}
+			
+			quadrantWanderer = false;
+			suicidalChaser = false;
+			pillInterceptor = false;
+			portalGuard = false;
+			interceptChaser = false;
 			
 			initialize = true;
 		}
 		
 		myMoves.clear();
 		
-		if(game.doesGhostRequireAction(GHOST.BLINKY)) //if it requires an action
+		if(game.doesGhostRequireAction(GHOST.BLINKY)) //if ghost requires an action
 		{
 			DecisionTree(game,GHOST.BLINKY);
 		}
 
-		if(game.doesGhostRequireAction(GHOST.PINKY)) //if it requires an action
+		if(game.doesGhostRequireAction(GHOST.PINKY)) //if ghost requires an action
 		{
 			DecisionTree(game,GHOST.PINKY);
 		}
 		
-		if( game.doesGhostRequireAction(GHOST.INKY))
+		if( game.doesGhostRequireAction(GHOST.INKY)) //if ghost requires an action
 		{
 			DecisionTree(game, GHOST.INKY);
 		}
-		if(game.doesGhostRequireAction(GHOST.SUE)) //if it requires an action
+		if(game.doesGhostRequireAction(GHOST.SUE)) //if ghost requires an action
 		{
 			DecisionTree(game,GHOST.SUE);
 		}
-		quadrantWanderer = false;
-		portalGuard = false;
-		towerGuard = false;
-		suicidalChaser = false;
-		pillInterceptor = false;
 		
 		return myMoves;
 	}
 	
 	void DecisionTree(Game game, GHOST ghost)
 	{	
+		// Try intercept the nearest pill to Ms Pac-Man
+		if (pillInterceptor == false && game.getNumberOfActivePills() < 5)
+		{
+			pillInterceptor = true;
+			InterceptPills(game, ghost);
+		}
+		
 		//One ghost should move towards Ms Pac-Man to force a pill pickup
-		if (closeToPacman(game, ghost) && !suicidalChaser && game.getGhostEdibleTime(ghost) > 0)
+		else if (closeToPacman(game, ghost,SUICIDAL_CHASE_PROXIMITY) && !suicidalChaser && !game.isGhostEdible(ghost))
 		{
 			suicidalChaser = true;
 			Chase(game,ghost);
 		}
 
 		//When Ms Pac-Man is close to a power pill
-		else if(game.getGhostEdibleTime(ghost)>0 || closeToPower(game,ghost))
+		else if(game.isGhostEdible(ghost) || closeToPower(game,ghost))
 		{
 			Flee(game,ghost);
 		}
 	
 		//Chase when Player is close to Ms Pac-Man
-		else if (closeToPacman(game,ghost))
+		else if (closeToPacman(game,ghost,CHASE_PROXIMITY) && interceptChaser == false && suicidalChaser == true)
 		{
-			Chase(game,ghost);
+			interceptChaser = true;
+			InterceptChase(game,ghost);
+			suicidalChaser = false;
 		}
 		//Enter same quadrant as Ms Pac-Man if other ghosts haven't claimed it already
-		else if (!quadrantWanderer)
+		else if (quadrantWanderer == false)
 		{
 			quadrantWanderer = true;
 			WanderQuadrant(game,ghost,getPacmanQuadrant(game));
 		}
-	
-		// Try intercept the nearest pill to Ms Pac-Man
-		else if (!pillInterceptor)
-		{
-			pillInterceptor = true;
-			InterceptPills(game, ghost);
-		}
-		
+			
 		//Hover over portals on the opposite side of to Ms Pac-Man
-		else if(!portalGuard)
+		else if(portalGuard == false)
 		{
 			portalGuard = true;
 			GuardPortals(game, ghost, getPacmanQuadrant(game));
+			
+			//Couldn't find a good place to relinquish locks. Doing it here half works
+			quadrantWanderer = false;
+			interceptChaser = false;
+			pillInterceptor = false;
+			portalGuard = false;
 		}
-		
-		//Be in the quadrant above Ms Pac-Man
+		//Be in the quadrant above or below Ms Pac-Man
 		else
 		{	
-			WanderQuadrant (game,ghost,getPacmanQuadrant(game));
+			if (getPacmanQuadrant(game) == Quadrant.TOP_LEFT)
+				WanderQuadrant (game,ghost,Quadrant.BOTTOM_LEFT);
+			else if(getPacmanQuadrant(game) == Quadrant.TOP_RIGHT)
+				WanderQuadrant (game, ghost, Quadrant.BOTTOM_RIGHT);
+			else if (getPacmanQuadrant(game) == Quadrant.BOTTOM_LEFT)
+				WanderQuadrant (game,ghost,Quadrant.TOP_LEFT);
+			else
+				WanderQuadrant(game,ghost,Quadrant.TOP_RIGHT);
+			
+			
 		}
 	}
 
-	/*Ghost Actions ie States
-	 */
+	/*Ghost Actions*/
 	
 	//Run away from Ms Pac-Man
 	private void Flee( Game game, GHOST ghost)
@@ -190,31 +230,62 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
 				game.getPacmanCurrentNodeIndex(),game.getGhostLastMoveMade(ghost),DM.PATH));
 	}
 	
-	//Wander the quadrant that's passed in
+	private void InterceptChase(Game game, GHOST ghost)
+	{
+		int interceptPoint = game.getNeighbour(game.getPacmanCurrentNodeIndex(), game.getPacmanLastMoveMade()); // A node in front of Ms Pac-Man
+		
+		//Check if there's an empty node in node in front of Ms- Pac-Man
+		for (int i = 0; i < NODES_TO_JUNCTION; i++)
+		{
+			if(interceptPoint != -1)
+			{
+				//If the node in front of Ms Pac-Man is a junction move to block off
+				if (game.isJunction(interceptPoint))
+				{
+					myMoves.put(ghost, game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost), interceptPoint,game.getGhostLastMoveMade(ghost), DM.PATH));
+					return;
+				}
+				else
+				{
+					//set interceptPoint to the node in front of it and try again
+					interceptPoint = game.getNeighbour(interceptPoint, game.getPacmanLastMoveMade());
+				}
+			}
+		}
+		
+		//Direct Chase, no node in front of Ms Pac-Man means she is in a corner i.e. trapped
+		Chase(game,ghost);
+	}
+	
+	//Wander the quadrant that's passed in by moving to a random junction
 	private void WanderQuadrant(Game game, GHOST ghost, Quadrant quad)
 	{
-		
+		int junctionId;
 		if (quad == Quadrant.TOP_LEFT)
 		{
+			junctionId = rnd.nextInt(TLQuadJunctions.size());
 			myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
-					TLQuadJunctions.get(rnd.nextInt(TLQuadJunctions.size())),game.getGhostLastMoveMade(ghost),DM.PATH));
+					TLQuadJunctions.get(junctionId),game.getGhostLastMoveMade(ghost),DM.PATH));
 		}
 		else if(quad == Quadrant.TOP_RIGHT)
 		{
+			junctionId = rnd.nextInt(TRQuadJunctions.size());
 			myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
-					TRQuadJunctions.get(rnd.nextInt(TRQuadJunctions.size())),game.getGhostLastMoveMade(ghost),DM.PATH));
+					TRQuadJunctions.get(junctionId),game.getGhostLastMoveMade(ghost),DM.PATH));
 	
 		}
 		else if (quad == Quadrant.BOTTOM_LEFT)
 		{
+			junctionId = rnd.nextInt(BLQuadJunctions.size());
 			myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
-					BLQuadJunctions.get(rnd.nextInt(BLQuadJunctions.size())),game.getGhostLastMoveMade(ghost),DM.PATH));
+					BLQuadJunctions.get(junctionId),game.getGhostLastMoveMade(ghost),DM.PATH));
 	
 		}
 		else
 		{
+			junctionId = rnd.nextInt(BRQuadJunctions.size());
 			myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
-					BRQuadJunctions.get(rnd.nextInt(BRQuadJunctions.size())),game.getGhostLastMoveMade(ghost),DM.PATH));
+					BRQuadJunctions.get(junctionId),game.getGhostLastMoveMade(ghost),DM.PATH));
 		}
 	}
 	
@@ -227,24 +298,42 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
 	
 	private void GuardPortals(Game game, GHOST ghost, Quadrant quad)
 	{
+		int junctionId;
 		if (quad == Quadrant.TOP_LEFT || quad == Quadrant. BOTTOM_LEFT)
 		{
-			//Guard right hand side portals
+				junctionId = rnd.nextInt(TRQuadJunctions.size() + BRQuadJunctions.size());
+				if (junctionId < TLQuadJunctions.size())
+				{
+					myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
+						TRQuadJunctions.get(junctionId),game.getGhostLastMoveMade(ghost),DM.PATH));
+				}
+				else
+				{
+					myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
+							BRQuadJunctions.get(junctionId - TRQuadJunctions.size()),game.getGhostLastMoveMade(ghost),DM.PATH));
+				}
 		}
 		else
 		{
-			//Guard left hand side portals
+			junctionId = rnd.nextInt(TLQuadJunctions.size() + BLQuadJunctions.size());
+		
+			if (junctionId < TLQuadJunctions.size())
+			{
+				myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
+					TLQuadJunctions.get(junctionId),game.getGhostLastMoveMade(ghost),DM.PATH));
+			}
+			else
+			{
+				myMoves.put(ghost,game.getApproximateNextMoveTowardsTarget(game.getGhostCurrentNodeIndex(ghost),
+						BLQuadJunctions.get(junctionId - TLQuadJunctions.size()),game.getGhostLastMoveMade(ghost),DM.PATH));
+			}
 		}
 	}
 
-	/*Game state checks
-	 * 
-	 * 
-	 * 
-	 * 
-	 */
+	/*Game state events*/
 	
-    //Check if Ms Pac-Man is close to an available power pill and is closer than a ghost //TODO one ghost need to force you to eat the pill
+	
+    //Check if Ms Pac-Man is close to an available power pill and is closer than a ghost
 	private boolean closeToPower(Game game, GHOST ghost)
     {
     	int[] powerPills=game.getPowerPillIndices();
@@ -260,9 +349,9 @@ public class MyGhosts extends Controller<EnumMap<GHOST,MOVE>>
     }
 	
 	//Check if a ghost is close to Ms Pac-Man
-	private boolean closeToPacman(Game game, GHOST ghost)
+	private boolean closeToPacman(Game game, GHOST ghost, int proximity)
 	{
-		if (game.getShortestPathDistance(game.getGhostCurrentNodeIndex(ghost),game.getPacmanCurrentNodeIndex()) < CHASE_PROXIMITY)
+		if (game.getShortestPathDistance(game.getGhostCurrentNodeIndex(ghost),game.getPacmanCurrentNodeIndex()) < proximity)
 			return true;
 		else
 			return false;
